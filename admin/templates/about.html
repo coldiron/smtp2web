@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}About smtp2web{% endblock %}
+{% block body %}
+<h1>About smtp2web</h1>
+<p><a href="/">Home</a> | <a href="/latest_message">Demo</a> | <a href="/about">About</a></p>
+<dl>
+  <dt>What is smtp2web?</dt>
+  <dd>smtp2web is a service to make it easier for web apps to receive email. It
+  provides a set of MX (Mail eXchange) servers which accept emails for your address
+  or entire domain, and sends them via HTTP POST to your servers.</dd>
+  
+  <dt>Why would I want to use it?</dt>
+  <dd>Some web apps, such as <a href="http://code.google.com/appengine/">Google
+  App Engine</a> apps, are unable to receive emails directly, as they can only
+  serve up HTTP requests. Even if your app runs in an environment that supports
+  running a custom SMTP server, using smtp2web may be much simpler than setting
+  up your own mail exchange infrastructure.</dd>
+  
+  <dt>How does it work?</dt>
+  <dd>Whenever an email arrives for an address or domain assigned to you, the
+  entire message (including headers) is sent in a POST request to the URL you
+  specified, with Content-Type: multipart/rfc-822. In addition, the query
+  parameters "from" and "to" are set to the envelope sender and recipient,
+  respectively.
+  <br /><br />
+  Here's how to use it in an App Engine application, when using App Engine's
+  webapp framework:
+  <pre>from google.appengine.ext import webapp
+import email
+
+class EmailHandler(webapp.RequestHandler):
+  def post(self):
+    sender = self.request.GET.get("from", "")
+    recipient = self.request.GET.get("to", "")
+    message = email.message_from_string(self.request.body)
+    # Do stuff with the email message</pre>
+  </dd>
+  
+  <dt>How much does it cost?</dt>
+  <dd>Nothing. In time, a paid option for heavy use may be introduced, but there
+  will always be a reasonable "free quota".</dd>
+  
+  <dt>How many emails can I receive per day?</dt>
+  <dd>There's no firm limit, but keep it reasonable. In case of excessive use
+  (excessive being to the point that it impairs others' use of the facilities),
+  we reserve the right to disable or limit your account. We will always attempt
+  to contact you before doing that, however.</dd>
+  
+  <dt>Do you support other interfaces, such as SOAP or XML-RPC?</dt>
+  <dd>No, but it's planned. If you need or really, really want such an interface,
+  let me know by emailing arachnid AT notdot.net and tell me about it!</dd>
+  
+  <dt>What if I just want a single email address?</dt>
+  <dd>That's fine - just <a href="{{login_url}}">sign in</a>, go to the <a href="/">main page</a>,
+  and select "add @smtp2web.com mapping". You can then pick an smtp2web.com email
+  address and a URL to send messages to.</dd>
+  
+  <dt>What if I want all the email for my domain to use the service?</dt>
+  <dd>That's fine too! Just choose "add domain mapping" on the main page and
+  specify the domain and URL. Once you've finished the process, you'll be provided
+  with a list of MX records you should configure on your domain to enable the service.</dd>
+  
+  <dt>What if I want only <em>some</em> of my domain's email to use the service?</dt>
+  <dd>We don't support this directly - all the mail sent to our MX servers is either
+  POSTed to a URL or rejected. However, if you register a single @smtp2web.com address
+  and configure your own mail system to forward email for the required addresses to it,
+  you can achieve the same effect.</dd>
+  
+  <dt>My question isn't covered here, or I have a suggestion or problem</dt>
+  <dd>Sure! Email me at arachnid AT notdot.net with your complaints, questions or suggestions.</dd>
+</dl>
+{% endblock %}
