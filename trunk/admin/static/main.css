@@ -1,0 +1,35 @@
+body {
+  font: 12pt sans-serif;
+}
+
+#loginbox {
+  float: right;
+}
+
+table {
+  margin-bottom: 1em;
+}
+
+th {
+  text-align: right;
+}
+
+thead th {
+  text-align: left;
+}
+
+.logentry {
+  font-style: italic;
+}
+
+.logmessage {
+  text-indent: 2em;
+}
+
+dt {
+  font-weight: bold;
+}
+
+dd {
+  margin-bottom: 1em;
+}
