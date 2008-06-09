@@ -1,6 +1,7 @@
 import re
 import hashlib
 import logging
+import random
 
 from google.appengine.api import urlfetch
 
@@ -84,6 +85,9 @@ class AddMappingPage(lib.BaseHandler):
       template_values['error'] = "That mapping is already in use."
       self.RenderTemplate("addmapping.html", template_values)
     else:
+      mxen = model.SmtpServer.all().fetch(100)
+      mxen.sort(key=random.random)
+      template_values['mxen'] = mxen[:3]
       self.RenderTemplate("mappingadded.html", template_values)
 
 
