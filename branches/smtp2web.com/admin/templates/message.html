@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Test Message{% endblock %}
+{% block body %}
+<h1>Test Message</h1>
+<p><a href="/">Home</a> | <a href="/latest_message">Demo</a> | <a href="/about">About</a></p>
+<p>Here is the most recent message sent to test@smtp2web.com:</p>
+<table>
+  <tr><th>From:</th><td>{{from|escape}}</td></tr>
+  <tr><th>To:</th><td>{{to|escape}}</td></tr>
+  <tr><th>Subject:</th><td>{{subject|escape}}</td></tr>
+  <tr><th>Body:</th><td><pre>{{message|escape}}</pre></td></tr>
+</table>
+{% endblock %}
