@@ -32,6 +32,8 @@ class Mapping(db.Model):
 
 class SmtpServer(db.Model):
   hostname = db.StringProperty(required=True)
+  # The name to display in the list of MXen.
+  mxname = db.StringProperty(required=True)
   secret_key = db.TextProperty(required=True)
 
 
