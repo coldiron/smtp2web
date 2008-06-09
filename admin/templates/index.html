@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block body %}
+<h1>smtp2web</h1>
+<p><a href="/">Home</a> | <a href="/latest_message">Demo</a> | <a href="/about">About</a></p>
+{% if not user %}
+  <p>smtp2web is a service that facilitates receiving emails in web applications
+  such as those built on <a href="http://code.google.com/appengine/">Google App Engine</a>.
+  It does this by accepting email for an address or domain, and uploading those
+  emails to your application in POST requests to a URL you provide.</p>
+  <p>smtp2web allows you to register either a single @smtp2web.com email address,
+  or have your entire domain proxied through the service.</p>
+  <p>For more details and to register an address or domain, <a href="{{login_url}}">Sign In</a>.</p>
+{% else %}
+  <h2>Address mappings for {{user.nickname|escape}}</h2>
+  {% if mappings.0 %}
+    <table>
+      <thead>
+        <tr><th>User</th><th>Domain</th><th>POST URL</th><th>Actions</th></tr>
+      </thead>
+      {% for mapping in mappings %}
+        <tr>
+          <td>
+            {% if mapping.user %}
+              {{mapping.user|escape}}
+            {% else %}
+              *
+            {% endif %}
+          </td>
+          <td>{{mapping.host|escape}}</td>
+          <td>{{mapping.url|escape}}</td>
+          <td>
+            <a href="/mapping/{{mapping.key.name}}/logs">View Logs</a>
+            <a href="/mapping/{{mapping.key.name}}/delete">Delete</a>
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+  <a href="/addmapping?type=basic">Add @smtp2web.com mapping</a><br />
+  <a href="/addmapping?type=domain">Add domain mapping</a><br />
+{% endif %}
+{% endblock %}
