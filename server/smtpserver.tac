@@ -10,8 +10,8 @@ import smtp2web
 
 application = service.Application("smtp2web Service")
 
-settings = smtpserver.Settings(secret_key="<enter secret key here>",
-                               state_file="state", master_host="localhost:8081")
+settings = smtp2web.Settings(secret_key="<enter secret key here>",
+                             state_file="state", master_host="localhost:8081")
 
 smtpServerFactory = smtp2web.ESMTPFactory(settings)
 smtpServerService = internet.TCPServer(2025, smtpServerFactory)
