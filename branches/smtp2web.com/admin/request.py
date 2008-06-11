@@ -13,6 +13,7 @@ class EmptyHandler(webapp.RequestHandler):
 application = webapp.WSGIApplication([
     ("/", controllers.IndexPage),
     ("/addmapping", controllers.AddMappingPage),
+    ("/test_email", controllers.ReceiveMessagePage),
     ("/latest_message", controllers.ShowMessagePage),
     ("/api/get_mappings", controllers.GetMappingsPage),
     ("/api/upload_logs", controllers.UploadLogsPage),
