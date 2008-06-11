@@ -50,6 +50,18 @@ class Settings(object):
     f.close()
 
 
+def getPage(url, *args, **kwargs):
+  scheme, host, port, path = client._parse(url)
+  factory = client.HTTPClientFactory(url, *args, **kwargs)
+  factory.noisy = False
+  if scheme == "https":
+    from twisted.internet import ssl
+    reactor.connectSSL(host, port, factory, ssl.ClientContextFactory())
+  else:
+    reactor.connectTCP(host, port, factory)
+  return factory.deferred
+
+
 class Message(object):
   implements(smtp.IMessage)
 
@@ -82,9 +94,9 @@ class Message(object):
     qs.append(("to", str(self.rcpt.dest)))
     url = urlparse.urlunparse(urlparts[:4]+(urllib.urlencode(qs), urlparts[5]))
     
-    ret = client.getPage(url, method="POST", postdata="\n".join(self.lines),
-                         headers={"Content-Type": "multipart/rfc822"},
-                         agent="smtp2web/1.0")
+    ret = getPage(url, method="POST", postdata="\n".join(self.lines),
+                  headers={"Content-Type": "multipart/rfc822"},
+                  agent="smtp2web/1.0", timeout=30)
         
     def addLogEntry(response):
       ts = time.mktime(datetime.datetime.now().utctimetuple())
@@ -172,25 +184,31 @@ class ESMTPFactory(protocol.ServerFactory):
     reactor.callWhenRunning(self.sync)
   
   def updateMappings(self):
-    qs = {}
-    qs["hostname"] = self.settings.hostname
-    qs["last_updated"] = self.settings.usermap_lastupdated or ""
+    qs = {
+        "hostname": self.settings.hostname,
+        "last_updated": self.settings.usermap_lastupdated or "",
+        "ver": 1,
+    }
     qs["request_hash"] = hashlib.sha1(
         "%s:%s" % (self.settings.secret_key, qs["last_updated"])).hexdigest()
     url = "http://%s/api/get_mappings?%s" % (self.settings.master_host,
                                              urllib.urlencode(qs))
-    ret = client.getPage(url, agent="smtp2web/1.0")
+    ret = getPage(url, agent="smtp2web/1.0", timeout=30)
     
     def _doUpdate(result):
       result = [x for x in result.split("\n") if x]
       if len(result) > 1 or not self.settings.usermap_lastupdated:
         log.msg("Updating %d user map entries" % (len(result) - 1, ))
         reader = csv.reader(result)
-        for user, host, url, ts in reader:
+        for user, host, url, ts, deleted in reader:
           if user:
-            self.settings.usermap["%s@%s" % (user, host)] = url
+            key = "%s@%s" % (user, host)
           else:
-            self.settings.usermap[host] = url
+            key = host
+          if deleted == "True":
+            del self.settings.usermap[key]
+          else:
+            self.settings.usermap[key] = url
           self.settings.usermap_lastupdated = ts
         self.settings.save()
         
@@ -215,9 +233,9 @@ class ESMTPFactory(protocol.ServerFactory):
     
     url = ("http://%s/api/upload_logs?hostname=%s&request_hash=%s"
            % (self.settings.master_host, self.settings.hostname, request_hash))
-    ret = client.getPage(url, method="POST", postdata=data,
-                         headers={"Content-Type": "text/csv"},
-                         agent="smtp2web/1.0")
+    ret = getPage(url, method="POST", postdata=data,
+                  headers={"Content-Type": "text/csv"},
+                  agent="smtp2web/1.0", timeout=30)
     
     def _handleResponse(result):
       self.settings.logentries[:50] = []

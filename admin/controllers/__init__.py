@@ -1,4 +1,3 @@
-from index import IndexPage, AboutPage
+from index import IndexPage
 from mapping import AddMappingPage, DeleteMappingPage, LogsPage
 from api import GetMappingsPage, UploadLogsPage
-from demo import ReceiveMessagePage, ShowMessagePage
