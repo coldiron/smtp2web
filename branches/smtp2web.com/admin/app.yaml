@@ -1,5 +1,5 @@
 application: appcfg-upload-test
-version: trunk
+version: live
 runtime: python
 api_version: 1
 

@@ -14,6 +14,7 @@ class Mapping(db.Model):
   url = db.LinkProperty(required=True)
   created = db.DateTimeProperty(required=True, auto_now_add=True)
   last_updated = db.DateTimeProperty(required=True, auto_now=True)
+  deleted = db.BooleanProperty(required=True, default=True)
 
   @classmethod
   def get_key_name(cls, user,host):

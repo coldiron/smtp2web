@@ -6,6 +6,7 @@ import random
 from google.appengine.api import urlfetch
 
 import lib
+from lib import config
 import model
 
 class AddMappingPage(lib.BaseHandler):
@@ -53,13 +54,14 @@ class AddMappingPage(lib.BaseHandler):
       self.RenderTemplate("addmapping.html", template_values)
       return
     
-    if model.Mapping.get_by_address(user, host) != None:
+    oldmapping = model.Mapping.get_by_address(user, host)
+    if oldmapping and not oldmapping.deleted:
       template_values['error'] = ("That address is already in use. Please try another.")
       self.RenderTemplate("addmapping.html", template_values)
       return
 
     urlbase = url[:url.rfind("/")+1]
-    verify_hash = hashlib.sha1("d9451b1213e9aeec312ad58c1b5c32ee:" + urlbase).hexdigest()
+    verify_hash = hashlib.sha1("%s:%s" % (config.secret_key, urlbase)).hexdigest()
     verify_url = "%s/smtp2web_%s.html" % (url[:url.rfind("/")], verify_hash[:16])
     template_values['verify_url'] = verify_url
     
@@ -75,20 +77,28 @@ class AddMappingPage(lib.BaseHandler):
       self.RenderTemplate("confirmmapping.html", template_values)
       return
     
-    mapping = model.Mapping.get_or_insert(
-        model.Mapping.get_key_name(user, host),
-        owner = self.user,
-        user = user,
-        host = host,
-        url = url)
-    if mapping.owner != self.user:
-      template_values['error'] = "That mapping is already in use."
-      self.RenderTemplate("addmapping.html", template_values)
+    if oldmapping:
+      oldmapping.owner = self.user
+      oldmapping.user = user
+      oldmapping.host = host
+      oldmapping.url = url
+      oldmapping.put()
     else:
-      mxen = model.SmtpServer.all().fetch(100)
-      mxen.sort(key=random.random)
-      template_values['mxen'] = mxen[:3]
-      self.RenderTemplate("mappingadded.html", template_values)
+      mapping = model.Mapping.get_or_insert(
+          model.Mapping.get_key_name(user, host),
+          owner = self.user,
+          user = user,
+          host = host,
+          url = url)
+      if mapping.owner != self.user:
+        template_values['error'] = "That mapping is already in use."
+        self.RenderTemplate("addmapping.html", template_values)
+        return
+
+    mxen = model.SmtpServer.all().fetch(100)
+    mxen.sort(key=random.random)
+    template_values['mxen'] = mxen[:3]
+    self.RenderTemplate("mappingadded.html", template_values)
 
 
 class DeleteMappingPage(lib.BaseHandler):
@@ -121,7 +131,8 @@ class DeleteMappingPage(lib.BaseHandler):
         self.response.out.write("You cannot view someone else's mapping!")
         return
       
-      mapping.delete()
+      mapping.deleted = True
+      mapping.put()
     self.redirect("/")
 
 

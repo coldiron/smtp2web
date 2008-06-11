@@ -36,6 +36,8 @@ class GetMappingsPage(ApiPage):
       self.error(403)
       self.response.out.write("Request hash does not match")
     
+    version = int(self.request.GET.get("ver", 0))
+    
     q = model.Mapping.all()
     if last_updated:
       q.filter("last_updated >=", ts)
@@ -44,9 +46,14 @@ class GetMappingsPage(ApiPage):
     
     self.response.headers["Content-Type"] = "text/csv"
     writer = csv.writer(self.response.out)
-    writer.writerows((x.user, x.host, x.url,
-                      time.mktime(x.last_updated.timetuple()))
-                     for x in mappings)
+    if version >= 1:
+      writer.writerows((x.user, x.host, x.url,
+                        time.mktime(x.last_updated.timetuple()), x.deleted)
+                       for x in mappings)
+    else:
+      writer.writerows((x.user, x.host, x.url,
+                        time.mktime(x.last_updated.timetuple()))
+                       for x in mappings)
 
 
 class UploadLogsPage(ApiPage):
