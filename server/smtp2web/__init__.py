@@ -53,7 +53,7 @@ class Settings(object):
 def getPage(url, *args, **kwargs):
   scheme, host, port, path = client._parse(url)
   factory = client.HTTPClientFactory(url, *args, **kwargs)
-  factory.quiet = True
+  factory.noisy = False
   if scheme == "https":
     from twisted.internet import ssl
     reactor.connectSSL(host, port, factory, ssl.ClientContextFactory())
