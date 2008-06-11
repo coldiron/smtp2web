@@ -172,9 +172,11 @@ class ESMTPFactory(protocol.ServerFactory):
     reactor.callWhenRunning(self.sync)
   
   def updateMappings(self):
-    qs = {}
-    qs["hostname"] = self.settings.hostname
-    qs["last_updated"] = self.settings.usermap_lastupdated or ""
+    qs = {
+        "hostname": self.settings.hostname
+        "last_updated": self.settings.usermap_lastupdated or "",
+        "ver": 1
+    }
     qs["request_hash"] = hashlib.sha1(
         "%s:%s" % (self.settings.secret_key, qs["last_updated"])).hexdigest()
     url = "http://%s/api/get_mappings?%s" % (self.settings.master_host,
@@ -186,11 +188,15 @@ class ESMTPFactory(protocol.ServerFactory):
       if len(result) > 1 or not self.settings.usermap_lastupdated:
         log.msg("Updating %d user map entries" % (len(result) - 1, ))
         reader = csv.reader(result)
-        for user, host, url, ts in reader:
+        for user, host, url, ts, deleted in reader:
           if user:
-            self.settings.usermap["%s@%s" % (user, host)] = url
+            key = "%s@%s" % (user, host)
           else:
-            self.settings.usermap[host] = url
+            key = host
+          if deleted:
+            del self.settings.usermap[key]
+          else:
+            self.settings.usermap[key] = url
           self.settings.usermap_lastupdated = ts
         self.settings.save()
         
