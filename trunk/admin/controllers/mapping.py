@@ -96,7 +96,7 @@ class AddMappingPage(lib.BaseHandler):
         return
 
     mxen = model.SmtpServer.all().fetch(100)
-    mxen.sort(key=random.random)
+    mxen.sort(key=lambda x:random.random)
     template_values['mxen'] = mxen[:3]
     self.RenderTemplate("mappingadded.html", template_values)
 
