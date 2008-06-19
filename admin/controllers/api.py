@@ -72,7 +72,7 @@ class UploadLogsPage(ApiPage):
       if "@" in key:
         user, host = key.split("@", 1)
       else:
-        user = ""
+        user = None
         host = key
       mapping = model.Mapping.get_by_address(user, host)
       if not mapping:
