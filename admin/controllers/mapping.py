@@ -82,6 +82,7 @@ class AddMappingPage(lib.BaseHandler):
       oldmapping.user = user
       oldmapping.host = host
       oldmapping.url = url
+      oldmapping.deleted = False
       oldmapping.put()
     else:
       mapping = model.Mapping.get_or_insert(
