@@ -27,19 +27,24 @@ import uuid
 
 class Settings(object):
   def __init__(self, **kwargs):
+    # Externally accessed attributes
     self.max_message_size = 1048576
     self.usermap = {}
-    self.usermap_lastupdated = None
     self.logentries = []
+    
+    # Internal attributes
+    self.usermap_lastupdated = None
     self.sync_interval = 60.0
     self.master_host = "smtp2web.com"
     self.state_file = None
     self.hostname = socket.getfqdn()
     self.secret_key = None
+
     for key, val in kwargs.iteritems():
       setattr(self, key, val)
   
   def load(self):
+    if not os.path.exists(settings.state_file): return
     try:
       f = open(self.state_file, "r")
       self.usermap, self.usermap_lastupdated = cPickle.load(f)
@@ -51,6 +56,95 @@ class Settings(object):
     f = open(self.state_file, "w+")
     cPickle.dump((self.usermap, self.usermap_lastupdated), f)
     f.close()
+
+  def updateMappings(self):
+    qs = {
+        "hostname": self.hostname,
+        "last_updated": self.usermap_lastupdated or "",
+        "ver": 1,
+    }
+    qs["request_hash"] = hashlib.sha1(
+        "%s:%s" % (self.secret_key, qs["last_updated"])).hexdigest()
+    url = "http://%s/api/get_mappings?%s" % (self.master_host,
+                                             urllib.urlencode(qs))
+    ret = getPage(url, agent="smtp2web/1.0", timeout=30)
+    
+    def _doUpdate(result):
+      result = [x for x in result.split("\n") if x]
+      if len(result) > 0:
+        reader = csv.reader(result)
+        updated = 0
+        for i, (user, host, url, ts, deleted) in enumerate(reader):
+          if i == 0 and ts == self.usermap_lastupdated: continue
+          updated += 1  
+          
+          if host not in self.usermap:
+            self.usermap[host] = DomainMapping()
+          
+          mapping = self.usermap[host]
+          handler = MessageHandler(url)
+          if deleted == "True":
+            if not user:
+              mapping.deleteMapping(".*", True)
+            else:
+              mapping.deleteMapping(user, False)
+          else:
+            if not user:
+              mapping.updateMapping("", True, handler, sys.maxint)
+            else:
+              mapping.updateMapping(user, False, handler, 0)
+          self.usermap_lastupdated = ts
+        self.save()
+        if updated:
+          log.msg("Updated %d user map entries" % (updated, ))
+        
+        if len(result) == 100:
+          return updateMappings()
+        else:
+          return result
+    ret.addCallback(_doUpdate)
+    
+    def _handleError(failure):
+      log.err("Error fetching handler updates from %s: %s"
+              % (url, str(failure.value)))
+    ret.addErrback(_handleError)
+    return ret
+  
+  def uploadLogs(self):
+    if not self.logentries: return defer.succeed(None)
+    data = cStringIO.StringIO()
+    writer = csv.writer(data)
+    writer.writerows(self.logentries[:50])
+    data = data.getvalue()
+    sha1 = hashlib.sha1(self.secret_key)
+    sha1.update(":")
+    sha1.update(data)
+    request_hash = sha1.hexdigest()
+    
+    url = ("http://%s/api/upload_logs?version=1&hostname=%s&request_hash=%s"
+           % (self.master_host, self.hostname, request_hash))
+    ret = getPage(url, method="POST", postdata=data,
+                  headers={"Content-Type": "text/csv"},
+                  agent="smtp2web/1.0", timeout=30)
+    
+    def _handleResponse(result):
+      self.logentries[:50] = []
+      return self.uploadLogs()
+    ret.addCallback(_handleResponse)
+
+    def _handleError(failure):
+      log.err("Error uploading log entries to %s: %s"
+              % (url, str(failure.value)))
+    ret.addErrback(_handleError)
+    
+    return ret
+  
+  def sync(self):
+    """Syncs with the database."""
+    dl = defer.DeferredList([self.updateMappings(), self.uploadLogs()])
+    def _reSync(result):
+      reactor.callLater(self.sync_interval, self.sync)
+    dl.addBoth(_reSync)
 
 
 def getPage(url, *args, **kwargs):
@@ -157,14 +251,14 @@ class Message(object):
   
   def lineReceived(self, line):
     line_len = len(line)
+    self.total_length += line_len + 1
     if (self.total_length + line_len) <= self.settings.max_message_size:
       self.lines.append(line)
-      self.total_length += line_len + 1
     else:
       ts = time.mktime(datetime.datetime.now().utctimetuple())
       self.settings.logentries.append(
-          (str(uuid.uuid1()), (self.handler.id, self.rcpt.domain), logging.ERROR, ts,
-          str(self.sender), str(self.rcpt.dest), self.total_length,
+          (str(uuid.uuid1()), self.handler.id, self.rcpt.dest.domain, logging.ERROR, ts,
+          str(self.sender), str(self.rcpt.dest), self.total_length - 1,
           "Message exceeded maximum size of %d bytes." % (self.settings.max_message_size, )))
       raise smtp.SMTPServerError(552, "Message too long")
   
@@ -176,7 +270,8 @@ class Message(object):
       ts = time.mktime(datetime.datetime.now().utctimetuple())
       self.settings.logentries.append(
           (str(uuid.uuid1()), self.handler.id, self.rcpt.dest.domain, logging.DEBUG,
-           ts, str(self.sender), str(self.rcpt.dest), self.total_length, None))
+           ts, str(self.sender), str(self.rcpt.dest), self.total_length - 1,
+           None))
     ret.addCallback(addLogEntry)
 
     def handleError(failure):
@@ -184,7 +279,7 @@ class Message(object):
         ts = time.mktime(datetime.datetime.now().utctimetuple())
         self.settings.logentries.append(
             (uuid.uuid1(), self.handler.id, self.rcpt.dest.domain, logging.ERROR,
-             ts, str(self.sender), str(self.rcpt.dest), self.total_length,
+             ts, str(self.sender), str(self.rcpt.dest), self.total_length - 1,
              str(failure.value)))
       return failure
     ret.addErrback(handleError)
@@ -244,99 +339,9 @@ class ESMTPFactory(protocol.ServerFactory):
   
   def __init__(self, settings):
     self.settings = settings
-    if os.path.exists(settings.state_file):
-      reactor.callWhenRunning(self.settings.load)
-    reactor.callWhenRunning(self.sync)
-  
-  def updateMappings(self):
-    qs = {
-        "hostname": self.settings.hostname,
-        "last_updated": self.settings.usermap_lastupdated or "",
-        "ver": 1,
-    }
-    qs["request_hash"] = hashlib.sha1(
-        "%s:%s" % (self.settings.secret_key, qs["last_updated"])).hexdigest()
-    url = "http://%s/api/get_mappings?%s" % (self.settings.master_host,
-                                             urllib.urlencode(qs))
-    ret = getPage(url, agent="smtp2web/1.0", timeout=30)
+    reactor.callWhenRunning(self.settings.load)
+    reactor.callWhenRunning(self.settings.sync)
     
-    def _doUpdate(result):
-      result = [x for x in result.split("\n") if x]
-      if len(result) > 0:
-        reader = csv.reader(result)
-        updated = 0
-        for i, (user, host, url, ts, deleted) in enumerate(reader):
-          if i == 0 and ts == self.settings.usermap_lastupdated: continue
-          updated += 1  
-          
-          if host not in self.settings.usermap:
-            self.settings.usermap[host] = DomainMapping()
-          
-          mapping = self.settings.usermap[host]
-          handler = MessageHandler(url)
-          if deleted == "True":
-            if not user:
-              mapping.deleteMapping(".*", True)
-            else:
-              mapping.deleteMapping(user, False)
-          else:
-            if not user:
-              mapping.updateMapping("", True, handler, sys.maxint)
-            else:
-              mapping.updateMapping(user, False, handler, 0)
-          self.settings.usermap_lastupdated = ts
-        self.settings.save()
-        if updated:
-          log.msg("Updated %d user map entries" % (updated, ))
-        
-        if len(result) == 100:
-          return updateMappings()
-        else:
-          return result
-    ret.addCallback(_doUpdate)
-    
-    def _handleError(failure):
-      log.err("Error fetching handler updates from %s: %s"
-              % (url, str(failure.value)))
-    ret.addErrback(_handleError)
-    return ret
-  
-  def uploadLogs(self):
-    if not self.settings.logentries: return defer.succeed(None)
-    data = cStringIO.StringIO()
-    writer = csv.writer(data)
-    writer.writerows(self.settings.logentries[:50])
-    data = data.getvalue()
-    sha1 = hashlib.sha1(self.settings.secret_key)
-    sha1.update(":")
-    sha1.update(data)
-    request_hash = sha1.hexdigest()
-    
-    url = ("http://%s/api/upload_logs?version=1&hostname=%s&request_hash=%s"
-           % (self.settings.master_host, self.settings.hostname, request_hash))
-    ret = getPage(url, method="POST", postdata=data,
-                  headers={"Content-Type": "text/csv"},
-                  agent="smtp2web/1.0", timeout=30)
-    
-    def _handleResponse(result):
-      self.settings.logentries[:50] = []
-      return self.uploadLogs()
-    ret.addCallback(_handleResponse)
-
-    def _handleError(failure):
-      log.err("Error uploading log entries to %s: %s"
-              % (url, str(failure.value)))
-    ret.addErrback(_handleError)
-    
-    return ret
-  
-  def sync(self):
-    """Syncs with the database."""
-    dl = defer.DeferredList([self.updateMappings(), self.uploadLogs()])
-    def _reSync(result):
-      reactor.callLater(self.settings.sync_interval, self.sync)
-    dl.addBoth(_reSync)
-  
   def buildProtocol(self, addr):
     p = self.protocol()
     p.deliveryFactory = MessageDeliveryFactory(self.settings)
