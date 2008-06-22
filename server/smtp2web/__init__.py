@@ -9,18 +9,21 @@ from twisted.web import client
 import twisted.internet.error
 
 import cgi
+import csv
+import cPickle
+import cStringIO
+import datetime
+import hashlib
+import logging
+import os
+import re
+import socket
+import sys
+import time
 import urllib
 import urlparse
-import logging
-import cPickle
-import os
-import csv
-import hashlib
-import socket
-import time
-import datetime
 import uuid
-import cStringIO
+
 
 class Settings(object):
   def __init__(self, **kwargs):
@@ -62,15 +65,93 @@ def getPage(url, *args, **kwargs):
   return factory.deferred
 
 
+class MessageSubmissionError(Exception):
+  pass
+
+
+class MessageHandler(object):
+  def __init__(self, url):
+    self.url = url
+    self.id = None
+  
+  def invoke(self, sender, rcpt, message):
+    urlparts = urlparse.urlparse(self.url)
+    qs = cgi.parse_qsl(urlparts.query, True)
+    qs.append(("from", sender))
+    qs.append(("to", rcpt))
+    url = urlparse.urlunparse(urlparts[:4]+(urllib.urlencode(qs), urlparts[5]))
+    
+    ret = getPage(url, method="POST", postdata=message,
+                  headers={"Content-Type": "multipart/rfc822"},
+                  agent="smtp2web/1.0", timeout=30)
+    
+    def handleError(failure):
+      err = None
+      if failure.type == twisted.web.error.Error:
+        raise MessageSubmissionError(
+            "Received %s %s from server when sending POST request to %s"
+            % (failure.value.args[:2] + (url,)))
+      elif failure.type == twisted.internet.error.ConnectionRefusedError:
+        raise MessageSubmissionError("Connection refused by %s"
+                                     % (urlparts.netloc, ))
+      else:
+        return failure
+        
+    ret.addErrback(handleError)
+    return ret
+
+
+class DomainMapping(object):
+  def __init__(self):
+    self._users = dict()
+    self._regexes = list()
+    self._regexmap = dict()
+  
+  def updateMapping(self, id, is_regex, handler, priority):
+    assert handler.id == None
+    handler.id = id
+    if is_regex:
+      if not id:
+        entry = (re.compile(".*"), handler, priority)
+      else:
+        entry = (re.compile(id), handler, priority)
+      if id in self._regexmap:
+        i = self._regexes.index(self._regexmap[id])
+        self._regexes[i] = entry
+      else:
+        self._regexes.append(entry)
+      self._regexes.sort(key=lambda x:x[2])
+      self._regexmap[id] = entry
+    else:
+      self._users[id] = handler
+  
+  def deleteMapping(self, id, is_regex):
+    if is_regex:
+      if id in self._regexmap:
+        self._regexes.remove(self._regexmap[id])
+        del self._regexmap[id]
+    else:
+      if id in self._users:
+        del self._users[id]
+  
+  def findHandler(self, user):
+    if user in self._users:
+      return self._users[user]
+    else:
+      for regex, handler, priority in self._regexes:
+        if regex.search(user):
+          return handler
+      return None
+
+
 class Message(object):
   implements(smtp.IMessage)
 
-  def __init__(self, settings, sender, rcpt, url, address_key):
+  def __init__(self, settings, sender, rcpt, handler):
     self.settings = settings
     self.sender = sender
-    self.post_url = url
-    self.address_key = address_key
     self.rcpt = rcpt
+    self.handler = handler
     self.lines = []
     self.total_length = 0
   
@@ -82,46 +163,32 @@ class Message(object):
     else:
       ts = time.mktime(datetime.datetime.now().utctimetuple())
       self.settings.logentries.append(
-          (str(uuid.uuid1()), self.address_key, logging.ERROR, ts,
+          (str(uuid.uuid1()), (self.handler.id, self.rcpt.domain), logging.ERROR, ts,
           str(self.sender), str(self.rcpt.dest), self.total_length,
           "Message exceeded maximum size of %d bytes." % (self.settings.max_message_size, )))
       raise smtp.SMTPServerError(552, "Message too long")
   
   def eomReceived(self):
-    urlparts = urlparse.urlparse(self.post_url)
-    qs = cgi.parse_qsl(urlparts.query, True)
-    qs.append(("from", str(self.sender)))
-    qs.append(("to", str(self.rcpt.dest)))
-    url = urlparse.urlunparse(urlparts[:4]+(urllib.urlencode(qs), urlparts[5]))
-    
-    ret = getPage(url, method="POST", postdata="\n".join(self.lines),
-                  headers={"Content-Type": "multipart/rfc822"},
-                  agent="smtp2web/1.0", timeout=30)
+    ret = self.handler.invoke(str(self.sender), str(self.rcpt.dest),
+                              "\n".join(self.lines))
         
     def addLogEntry(response):
       ts = time.mktime(datetime.datetime.now().utctimetuple())
       self.settings.logentries.append(
-          (str(uuid.uuid1()), self.address_key, logging.DEBUG,
+          (str(uuid.uuid1()), self.handler.id, self.rcpt.dest.domain, logging.DEBUG,
            ts, str(self.sender), str(self.rcpt.dest), self.total_length, None))
+    ret.addCallback(addLogEntry)
 
     def handleError(failure):
-      err = None
-      if failure.type == twisted.web.error.Error:
-        err = ("Received %s %s from server when sending POST request to %s"
-               % (failure.value.args[:2] + (url,)))
-      elif failure.type == twisted.internet.error.ConnectionRefusedError:
-        err = "Connection refused by %s" % (urlparts.netloc, )
-      
-      if err:
+      if failure.type == MessageSubmissionError:
         ts = time.mktime(datetime.datetime.now().utctimetuple())
         self.settings.logentries.append(
-            (uuid.uuid1(), self.address_key, logging.ERROR,
-             ts, str(self.sender), str(self.rcpt.dest), self.total_length, err))
-
+            (uuid.uuid1(), self.handler.id, self.rcpt.dest.domain, logging.ERROR,
+             ts, str(self.sender), str(self.rcpt.dest), self.total_length,
+             str(failure.value)))
       return failure
-        
-    ret.addCallback(addLogEntry)
     ret.addErrback(handleError)
+
     return ret
   
   def connectionLost(self):
@@ -137,15 +204,13 @@ class MessageDelivery(object):
     self.settings = settings
   
   def validateTo(self, user):
-    key = str(user.dest)
-    url = self.settings.usermap.get(key, None)
-    if not url:
-      key = user.dest.domain
-      url = self.settings.usermap.get(key, None)
-    if not url:
+    mapping = self.settings.usermap.get(user.dest.domain, None)
+    if not mapping:
       raise smtp.SMTPBadRcpt(user.dest)
-    else:
-      return lambda: Message(self.settings, self.sender, user, url, key)
+    handler = mapping.findHandler(user.dest.local)
+    if not handler:
+      raise smtp.SMTPBadRcpt(user.dest)
+    return lambda: Message(self.settings, self.sender, user, handler)
   
   def validateFrom(self, helo, origin):
     self.sender = origin
@@ -197,27 +262,43 @@ class ESMTPFactory(protocol.ServerFactory):
     
     def _doUpdate(result):
       result = [x for x in result.split("\n") if x]
-      if len(result) > 1 or not self.settings.usermap_lastupdated:
-        log.msg("Updating %d user map entries" % (len(result) - 1, ))
+      if len(result) > 0:
         reader = csv.reader(result)
-        for user, host, url, ts, deleted in reader:
-          if user:
-            key = "%s@%s" % (user, host)
-          else:
-            key = host
+        updated = 0
+        for i, (user, host, url, ts, deleted) in enumerate(reader):
+          if i == 0 and ts == self.settings.usermap_lastupdated: continue
+          updated += 1  
+          
+          if host not in self.settings.usermap:
+            self.settings.usermap[host] = DomainMapping()
+          
+          mapping = self.settings.usermap[host]
+          handler = MessageHandler(url)
           if deleted == "True":
-            del self.settings.usermap[key]
+            if not user:
+              mapping.deleteMapping(".*", True)
+            else:
+              mapping.deleteMapping(user, False)
           else:
-            self.settings.usermap[key] = url
+            if not user:
+              mapping.updateMapping("", True, handler, sys.maxint)
+            else:
+              mapping.updateMapping(user, False, handler, 0)
           self.settings.usermap_lastupdated = ts
         self.settings.save()
+        if updated:
+          log.msg("Updated %d user map entries" % (updated, ))
         
         if len(result) == 100:
           return updateMappings()
         else:
           return result
     ret.addCallback(_doUpdate)
-    ret.addErrback(log.err)
+    
+    def _handleError(failure):
+      log.err("Error fetching handler updates from %s: %s"
+              % (url, str(failure.value)))
+    ret.addErrback(_handleError)
     return ret
   
   def uploadLogs(self):
@@ -231,7 +312,7 @@ class ESMTPFactory(protocol.ServerFactory):
     sha1.update(data)
     request_hash = sha1.hexdigest()
     
-    url = ("http://%s/api/upload_logs?hostname=%s&request_hash=%s"
+    url = ("http://%s/api/upload_logs?version=1&hostname=%s&request_hash=%s"
            % (self.settings.master_host, self.settings.hostname, request_hash))
     ret = getPage(url, method="POST", postdata=data,
                   headers={"Content-Type": "text/csv"},
@@ -241,6 +322,11 @@ class ESMTPFactory(protocol.ServerFactory):
       self.settings.logentries[:50] = []
       return self.uploadLogs()
     ret.addCallback(_handleResponse)
+
+    def _handleError(failure):
+      log.err("Error uploading log entries to %s: %s"
+              % (url, str(failure.value)))
+    ret.addErrback(_handleError)
     
     return ret
   
