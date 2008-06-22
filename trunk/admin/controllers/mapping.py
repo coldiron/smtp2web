@@ -2,6 +2,7 @@ import re
 import hashlib
 import logging
 import random
+import os
 
 from google.appengine.api import urlfetch
 
@@ -48,12 +49,6 @@ class AddMappingPage(lib.BaseHandler):
       self.RenderTemplate("addmapping.html", template_values)
       return
     
-    if type == "domain" and not url[7:url.find("/", 7)].endswith(host):
-      template_values['error'] = ("The URL to post to and the domain to deliver "
-                                  "email for must be the same.")
-      self.RenderTemplate("addmapping.html", template_values)
-      return
-    
     oldmapping = model.Mapping.get_by_address(user, host)
     if oldmapping and not oldmapping.deleted:
       template_values['error'] = ("That address is already in use. Please try another.")
@@ -65,17 +60,18 @@ class AddMappingPage(lib.BaseHandler):
     verify_url = "%s/smtp2web_%s.html" % (url[:url.rfind("/")], verify_hash[:16])
     template_values['verify_url'] = verify_url
     
-    if not self.request.POST.get("confirm", False):
-      self.RenderTemplate("confirmmapping.html", template_values)
-      return
-    
-    response = urlfetch.fetch(verify_url, method=urlfetch.HEAD)
-    if str(response.status_code)[0] != "2":
-      template_values['error'] = ("Could not fetch the verification page. Please "
-                                  "ensure it exists in the correct location and "
-                                  "is accessible, and try again.")
-      self.RenderTemplate("confirmmapping.html", template_values)
-      return
+    if not os.environ["SERVER_SOFTWARE"].startswith("Development/"):
+      if not self.request.POST.get("confirm", False):
+        self.RenderTemplate("confirmmapping.html", template_values)
+        return
+      
+      response = urlfetch.fetch(verify_url, method=urlfetch.HEAD)
+      if str(response.status_code)[0] != "2":
+        template_values['error'] = ("Could not fetch the verification page. Please "
+                                    "ensure it exists in the correct location and "
+                                    "is accessible, and try again.")
+        self.RenderTemplate("confirmmapping.html", template_values)
+        return
     
     if oldmapping:
       oldmapping.owner = self.user

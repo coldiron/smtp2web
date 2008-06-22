@@ -26,6 +26,7 @@ class ApiPage(lib.BaseHandler):
 class GetMappingsPage(ApiPage):
   def get(self):
     if not self.server:
+      logging.error("Server '%s' not found" % (self.hostname,))
       self.error(403)
       self.response.out.write("Invalid hostname")
       return
@@ -33,8 +34,10 @@ class GetMappingsPage(ApiPage):
     if last_updated:
       ts = datetime.datetime.fromtimestamp(float(last_updated))
     if not self.check_hash(last_updated):
+      logging.error("Request hash does not match")
       self.error(403)
       self.response.out.write("Request hash does not match")
+      return
     
     version = int(self.request.GET.get("ver", 0))
     
@@ -59,34 +62,57 @@ class GetMappingsPage(ApiPage):
 class UploadLogsPage(ApiPage):
   def post(self):
     if not self.server:
+      logging.error("Server '%s' not found" % (self.hostname,))
       self.error(403)
-      self.response.out.write("Not a valid server")
+      self.response.out.write("Invalid hostname")
       return
     if not self.check_hash(self.request.body):
+      logging.error("Request hash does not match")
       self.error(403)
       self.response.out.write("Request hash does not match")
       return
     
+    version = self.request.GET.get("version", 0)
     reader = csv.reader(self.request.body_file)
-    for id, key, level, ts, sender, rcpt, length, msg in reader:
-      if "@" in key:
-        user, host = key.split("@", 1)
-      else:
-        user = None
-        host = key
-      mapping = model.Mapping.get_by_address(user, host)
-      if not mapping:
-        logging.error("Unable to find mapping for '%s'" % key)
-        continue
-      
-      level = int(level)
-      model.LogEntry(key_name="_"+id,
-                     mapping=mapping,
-                     server=self.server,
-                     ts=datetime.datetime.utcfromtimestamp(float(ts)),
-                     sender=sender,
-                     recipient=rcpt,
-                     length=int(length),
-                     message=msg,
-                     is_warning=level>=logging.WARNING,
-                     is_error=level>=logging.ERROR).put()
+    if version >= 1:
+      for id, user, host, level, ts, sender, rcpt, length, msg in reader:
+        if user == "": user = None        
+        mapping = model.Mapping.get_by_address(user, host)
+        if not mapping:
+          logging.error("Unable to find mapping for '%s@%s'" % (user, host))
+          continue
+        
+        level = int(level)
+        model.LogEntry(key_name="_"+id,
+                       mapping=mapping,
+                       server=self.server,
+                       ts=datetime.datetime.utcfromtimestamp(float(ts)),
+                       sender=sender,
+                       recipient=rcpt,
+                       length=int(length),
+                       message=msg,
+                       is_warning=level>=logging.WARNING,
+                       is_error=level>=logging.ERROR).put()
+    else:
+      for id, key, level, ts, sender, rcpt, length, msg in reader:
+        if "@" in key:
+          user, host = key.split("@", 1)
+        else:
+          user = None
+          host = key
+        mapping = model.Mapping.get_by_address(user, host)
+        if not mapping:
+          logging.error("Unable to find mapping for '%s@%s'" % (user, host))
+          continue
+        
+        level = int(level)
+        model.LogEntry(key_name="_"+id,
+                       mapping=mapping,
+                       server=self.server,
+                       ts=datetime.datetime.utcfromtimestamp(float(ts)),
+                       sender=sender,
+                       recipient=rcpt,
+                       length=int(length),
+                       message=msg,
+                       is_warning=level>=logging.WARNING,
+                       is_error=level>=logging.ERROR).put()
