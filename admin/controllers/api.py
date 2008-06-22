@@ -39,7 +39,7 @@ class GetMappingsPage(ApiPage):
       self.response.out.write("Request hash does not match")
       return
     
-    version = int(self.request.GET.get("ver", 0))
+    version = int(self.request.GET.get("version", 0))
     
     q = model.Mapping.all()
     if last_updated:
