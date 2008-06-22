@@ -25,6 +25,18 @@ import urlparse
 import uuid
 
 
+def getPage(url, *args, **kwargs):
+  scheme, host, port, path = client._parse(url)
+  factory = client.HTTPClientFactory(url, *args, **kwargs)
+  factory.noisy = False
+  if scheme == "https":
+    from twisted.internet import ssl
+    reactor.connectSSL(host, port, factory, ssl.ClientContextFactory())
+  else:
+    reactor.connectTCP(host, port, factory)
+  return factory.deferred
+
+
 class Settings(object):
   def __init__(self, **kwargs):
     # Externally accessed attributes
@@ -39,12 +51,20 @@ class Settings(object):
     self.state_file = None
     self.hostname = socket.getfqdn()
     self.secret_key = None
+    self.getPage = getPage
+    self.mapping_fetch_limit = 100
+    self.log_post_limit = 50
 
     for key, val in kwargs.iteritems():
       setattr(self, key, val)
   
+  def findHandler(self, user, host):
+    mapping = self.usermap.get(host, None)
+    if not mapping: return None
+    return mapping.findHandler(user)
+  
   def load(self):
-    if not os.path.exists(settings.state_file): return
+    if not os.path.exists(self.state_file): return
     try:
       f = open(self.state_file, "r")
       self.usermap, self.usermap_lastupdated = cPickle.load(f)
@@ -61,13 +81,14 @@ class Settings(object):
     qs = {
         "hostname": self.hostname,
         "last_updated": self.usermap_lastupdated or "",
-        "ver": 1,
+        "version": 1,
+        "limit": self.mapping_fetch_limit,
     }
     qs["request_hash"] = hashlib.sha1(
         "%s:%s" % (self.secret_key, qs["last_updated"])).hexdigest()
     url = "http://%s/api/get_mappings?%s" % (self.master_host,
                                              urllib.urlencode(qs))
-    ret = getPage(url, agent="smtp2web/1.0", timeout=30)
+    ret = self.getPage(url, agent="smtp2web/1.0", timeout=30)
     
     def _doUpdate(result):
       result = [x for x in result.split("\n") if x]
@@ -94,12 +115,11 @@ class Settings(object):
             else:
               mapping.updateMapping(user, False, handler, 0)
           self.usermap_lastupdated = ts
-        self.save()
         if updated:
           log.msg("Updated %d user map entries" % (updated, ))
         
-        if len(result) == 100:
-          return updateMappings()
+        if len(result) == self.mapping_fetch_limit:
+          return self.updateMappings()
         else:
           return result
     ret.addCallback(_doUpdate)
@@ -111,10 +131,9 @@ class Settings(object):
     return ret
   
   def uploadLogs(self):
-    if not self.logentries: return defer.succeed(None)
     data = cStringIO.StringIO()
     writer = csv.writer(data)
-    writer.writerows(self.logentries[:50])
+    writer.writerows(self.logentries[:self.log_post_limit])
     data = data.getvalue()
     sha1 = hashlib.sha1(self.secret_key)
     sha1.update(":")
@@ -123,13 +142,14 @@ class Settings(object):
     
     url = ("http://%s/api/upload_logs?version=1&hostname=%s&request_hash=%s"
            % (self.master_host, self.hostname, request_hash))
-    ret = getPage(url, method="POST", postdata=data,
-                  headers={"Content-Type": "text/csv"},
-                  agent="smtp2web/1.0", timeout=30)
-    
+    ret = self.getPage(url, method="POST", postdata=data,
+                       headers={"Content-Type": "text/csv"},
+                       agent="smtp2web/1.0", timeout=30)
+
     def _handleResponse(result):
-      self.logentries[:50] = []
-      return self.uploadLogs()
+      self.logentries[:self.log_post_limit] = []
+      if self.logentries:
+        return self.uploadLogs()
     ret.addCallback(_handleResponse)
 
     def _handleError(failure):
@@ -141,22 +161,12 @@ class Settings(object):
   
   def sync(self):
     """Syncs with the database."""
-    dl = defer.DeferredList([self.updateMappings(), self.uploadLogs()])
+    mapping_update = self.updateMappings()
+    mapping_update.addCallback(lambda result: self.save())
+    dl = defer.DeferredList([mapping_update, self.uploadLogs()])
     def _reSync(result):
       reactor.callLater(self.sync_interval, self.sync)
     dl.addBoth(_reSync)
-
-
-def getPage(url, *args, **kwargs):
-  scheme, host, port, path = client._parse(url)
-  factory = client.HTTPClientFactory(url, *args, **kwargs)
-  factory.noisy = False
-  if scheme == "https":
-    from twisted.internet import ssl
-    reactor.connectSSL(host, port, factory, ssl.ClientContextFactory())
-  else:
-    reactor.connectTCP(host, port, factory)
-  return factory.deferred
 
 
 class MessageSubmissionError(Exception):
@@ -299,10 +309,7 @@ class MessageDelivery(object):
     self.settings = settings
   
   def validateTo(self, user):
-    mapping = self.settings.usermap.get(user.dest.domain, None)
-    if not mapping:
-      raise smtp.SMTPBadRcpt(user.dest)
-    handler = mapping.findHandler(user.dest.local)
+    handler = self.settings.findHandler(user.dest.local, user.dest.domain)
     if not handler:
       raise smtp.SMTPBadRcpt(user.dest)
     return lambda: Message(self.settings, self.sender, user, handler)
